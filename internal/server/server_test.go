@@ -169,7 +169,6 @@ func TestServerGRPC(t *testing.T) {
 		t.Errorf("expected task phase to be 'Running', got %q", resTask.Status.Phase)
 	}
 
-
 	// 5. Workspaces
 	ws, err = client.GetWorkspace(ctx, &v1alpha1.GetWorkspaceRequest{Atespace: "default", Name: "grpc-ws"})
 	if err != nil {
@@ -310,6 +309,7 @@ func TestCreateTask_ValidatesWorkspaceBindings(t *testing.T) {
 
 type fakeReconciler struct {
 	reconcileCount int
+	reconcileErr   error
 	deleteCount    int
 	deleteErr      error
 	onDelete       func(ctx context.Context, atespace, taskName string) error
@@ -317,6 +317,9 @@ type fakeReconciler struct {
 
 func (f *fakeReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, workspaces ...*v1alpha1.Workspace) (*v1alpha1.Task, error) {
 	f.reconcileCount++
+	if f.reconcileErr != nil {
+		return task, f.reconcileErr
+	}
 	task.Status = &v1alpha1.TaskStatus{
 		Phase: task.GetStatus().GetPhase(),
 	}
@@ -501,5 +504,152 @@ func TestServer_DeleteTask_UpdateStatusError(t *testing.T) {
 	}
 	if rec.deleteCount != 0 {
 		t.Errorf("expected ReconcileDelete not to be called if UpdateTaskStatus fails, got %d calls", rec.deleteCount)
+	}
+}
+
+func TestServer_SuspendTask_ReconcileErrorRetainsRunningState(t *testing.T) {
+	st := memory.NewStore()
+	rec := &fakeReconciler{
+		reconcileErr: errors.New("substrate unavailable"),
+	}
+	srv := server.NewServer(st, server.Options{Reconciler: rec})
+	ctx := context.Background()
+
+	if err := st.SaveTask(ctx, &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "task-suspend-err", Atespace: "default"},
+		Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
+		Status: &v1alpha1.TaskStatus{
+			Phase:      "Running",
+			Actor:      "task-suspend-err",
+			WorkerIp:   "10.244.1.42",
+			Conditions: []*v1alpha1.Condition{{Type: "Ready", Status: "True", Reason: "TaskRunning"}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveTask: %v", err)
+	}
+
+	_, err := srv.SuspendTask(ctx, &v1alpha1.SuspendTaskRequest{Name: "task-suspend-err"})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error when Reconcile fails on SuspendTask, got %v", err)
+	}
+
+	stored, err := srv.GetTask(ctx, &v1alpha1.GetTaskRequest{Name: "task-suspend-err"})
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.GetStatus().GetPhase() != "Running" {
+		t.Errorf("stored phase = %q, want Running after failed suspension", stored.GetStatus().GetPhase())
+	}
+	if stored.GetStatus().GetWorkerIp() != "10.244.1.42" {
+		t.Errorf("stored worker IP = %q, want 10.244.1.42", stored.GetStatus().GetWorkerIp())
+	}
+	if len(stored.GetStatus().GetConditions()) != 1 || stored.GetStatus().GetConditions()[0].GetReason() != "TaskRunning" {
+		t.Errorf("stored conditions = %v, want Ready=True (TaskRunning)", stored.GetStatus().GetConditions())
+	}
+}
+
+func TestServer_SuspendTask_SuccessUpdatesStoredState(t *testing.T) {
+	st := memory.NewStore()
+	rec := &fakeReconciler{}
+	srv := server.NewServer(st, server.Options{Reconciler: rec})
+	ctx := context.Background()
+
+	if err := st.SaveTask(ctx, &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "task-suspend-ok", Atespace: "default"},
+		Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
+		Status: &v1alpha1.TaskStatus{
+			Phase:      "Running",
+			Actor:      "task-suspend-ok",
+			WorkerIp:   "10.244.1.42",
+			Conditions: []*v1alpha1.Condition{{Type: "Ready", Status: "True", Reason: "TaskRunning"}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveTask: %v", err)
+	}
+
+	resp, err := srv.SuspendTask(ctx, &v1alpha1.SuspendTaskRequest{Name: "task-suspend-ok"})
+	if err != nil {
+		t.Fatalf("SuspendTask: %v", err)
+	}
+	if resp.GetStatus().GetPhase() != "Suspended" {
+		t.Errorf("response phase = %q, want Suspended", resp.GetStatus().GetPhase())
+	}
+
+	stored, err := srv.GetTask(ctx, &v1alpha1.GetTaskRequest{Name: "task-suspend-ok"})
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.GetStatus().GetPhase() != "Suspended" {
+		t.Errorf("stored phase = %q, want Suspended", stored.GetStatus().GetPhase())
+	}
+	if stored.GetStatus().GetWorkerIp() != "" {
+		t.Errorf("stored worker IP = %q, want empty", stored.GetStatus().GetWorkerIp())
+	}
+}
+
+func TestServer_CreateTask_InitialPhaseSuspended(t *testing.T) {
+	st := memory.NewStore()
+	rec := &fakeReconciler{}
+	srv := server.NewServer(st, server.Options{Reconciler: rec})
+	ctx := context.Background()
+
+	task, err := srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{
+		Task: &v1alpha1.Task{
+			Metadata: &v1alpha1.ObjectMeta{Name: "task-create-suspended"},
+			Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if task.GetStatus().GetPhase() != "Suspended" {
+		t.Errorf("returned task phase = %q, want Suspended", task.GetStatus().GetPhase())
+	}
+
+	stored, err := srv.GetTask(ctx, &v1alpha1.GetTaskRequest{Name: "task-create-suspended"})
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.GetStatus().GetPhase() != "Suspended" {
+		t.Errorf("stored phase = %q, want Suspended", stored.GetStatus().GetPhase())
+	}
+}
+
+func TestServer_CreateTask_ReconcileErrorMarksFailed(t *testing.T) {
+	st := memory.NewStore()
+	rec := &fakeReconciler{
+		reconcileErr: errors.New("substrate suspend actor failure"),
+	}
+	srv := server.NewServer(st, server.Options{Reconciler: rec})
+	ctx := context.Background()
+
+	_, err := srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{
+		Task: &v1alpha1.Task{
+			Metadata: &v1alpha1.ObjectMeta{Name: "task-create-fail"},
+			Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
+		},
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error when Reconcile fails on CreateTask, got %v", err)
+	}
+
+	// Task was saved and updated to Failed phase in store
+	stored, err := srv.GetTask(ctx, &v1alpha1.GetTaskRequest{Name: "task-create-fail"})
+	if err != nil {
+		t.Fatalf("expected task to exist in store after reconcile error, got %v", err)
+	}
+	if stored.GetStatus().GetPhase() != "Failed" {
+		t.Errorf("stored phase = %q, want Failed", stored.GetStatus().GetPhase())
+	}
+
+	// Because task already exists in store, attempting to create it again must fail with FailedPrecondition
+	_, err = srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{
+		Task: &v1alpha1.Task{
+			Metadata: &v1alpha1.ObjectMeta{Name: "task-create-fail"},
+			Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
+		},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition on duplicate create, got %v", err)
 	}
 }
