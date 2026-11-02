@@ -1,0 +1,41 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ax.v1alpha1;
+
+option go_package = "github.com/google/ax/pkg/apis/v1alpha1";
+
+// TODO(ws3/yongrui): Finalize EgressRule and credential reference schema
+// (align with https://github.com/google/ax/issues/549).
+//
+// EgressRule is referenced by:
+//   - WorkspaceSetup.egress (scoped exclusively to the workspace setup actor;
+//     never inherited by Task actors).
+//   - TaskSpec.egress and ForkOverrides.egress (scoped to the task actor).
+message EgressRule {
+  // Outbound destination hosts (no IP literals, *.svc, or *.cluster.local).
+  repeated string hosts = 1;
+  // Optional credential header injection handled at the Substrate egress gateway.
+  HeaderInjection inject = 2;
+}
+
+// HeaderInjection maps to Substrate's CredentialHeader; AX passes credential
+// references through without reading or storing raw secret material.
+message HeaderInjection {
+  string header = 1;
+  string credential_uri = 2;
+  string prefix = 3;
+}

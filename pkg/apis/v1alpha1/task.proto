@@ -1,0 +1,255 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ax.v1alpha1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "google/rpc/status.proto";
+import "pkg/apis/v1alpha1/common.proto";
+import "pkg/apis/v1alpha1/egress.proto";
+import "pkg/apis/v1alpha1/workspace.proto";
+
+option go_package = "github.com/google/ax/pkg/apis/v1alpha1";
+
+// TODO(ws1/sizhang): Align and finalize internal TaskSpec / TaskStatus fields
+// and field numbers. The cross-workstream contracts reflected below are:
+//   - `profile`: optional compute Profile override (inherits WorkspaceSpec.default_profile).
+//   - `workspace`: WorkspaceRef with optional `path` (defaults to "/workspace").
+//   - `egress`: references EgressRule defined in egress.proto (owned by WS3).
+
+message Task {
+  string api_version = 1;
+  string kind = 2;
+  ObjectMeta metadata = 3;
+  TaskSpec spec = 4;
+  TaskStatus status = 5;
+}
+
+message TaskSpec {
+  // Deprecated: moved into `profile.image`.
+  string image = 1 [deprecated = true];
+
+  // Command argv; if empty, runs the resolved image's ENTRYPOINT + CMD in its WORKDIR.
+  repeated string command = 2;
+
+  // Non-secret environment variables merged on top of the image's Env.
+  repeated EnvVar env = 3;
+
+  // Deprecated: moved into `profile.resources`.
+  ResourcesSpec resources = 4 [deprecated = true];
+
+  // Optional Workspace binding. Mounted at `/workspace` unless WorkspaceRef.path is set.
+  WorkspaceRef workspace = 5;
+
+  // Enables in-container guest services backing `ax ssh`. Off by default.
+  bool debug = 6;
+
+  // Free-form, runner-defined non-secret configuration.
+  google.protobuf.Struct config = 7;
+
+  // Declarative goals and post-exit verifiers (WS1).
+  repeated Goal goals = 8;
+
+  // Retries after a failed exit, failed verifier, sandbox crash, or lost runner (WS1).
+  int32 max_retries = 9;
+
+  // Execution budget (WS1 / WS4).
+  Budget budget = 10;
+
+  // Task-scoped runtime behavior (WS1). Profile-scoped settings
+  // (snapshot_fidelity, worker_selector) live in `profile`.
+  TaskRuntimeSpec runtime = 11;
+
+  // Task-scoped outbound egress and credential injection rules (WS3).
+  repeated EgressRule egress = 12;
+
+  // Lineage set by ForkTask (WS1).
+  string parent_task_id = 13;
+
+  // Create task in SUSPENDED state and start on ResumeTask (WS1).
+  bool suspend = 14;
+
+  // Follow the parent task's deletion or cancellation (WS1).
+  bool cascade_on_parent_delete = 15;
+
+  // Optional compute profile override (image, resources, snapshot_fidelity, worker_selector).
+  // When binding a Workspace, omitted fields inherit from WorkspaceSpec.default_profile.
+  Profile profile = 16;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
+}
+
+message TaskRuntimeSpec {
+  reserved 1, 2;
+  // UID to drop privileges to when running the agent command (default 1000; 0 rejected).
+  optional int32 run_as_uid = 3;
+  // Duration without activity before the runner requests suspension.
+  google.protobuf.Duration idle_timeout = 4;
+}
+
+message Goal {
+  string spec = 3;
+  repeated Verifier verifiers = 5;
+}
+
+message Verifier {
+  string name = 1;
+  oneof kind {
+    CommandCheck command_check = 3;
+  }
+  bool required = 5;
+}
+
+message CommandCheck {
+  string command = 1;
+  string expected_output = 2;
+  google.protobuf.Duration timeout = 10;
+}
+
+message Budget {
+  int64 max_total_tokens = 1;
+  int64 max_tool_calls = 2;
+  google.protobuf.Duration max_wallclock = 3;
+}
+
+enum TaskState {
+  TASK_STATE_UNSPECIFIED = 0;
+  TASK_STATE_IDLE = 1;
+  TASK_STATE_WORKING = 2;
+  TASK_STATE_REQUIRES_ACTION = 3;
+  TASK_STATE_COMPLETED = 4;
+  TASK_STATE_FAILED = 5;
+  TASK_STATE_CANCELLED = 6;
+  TASK_STATE_QUEUED = 7;
+  TASK_STATE_SUSPENDED = 8;
+  TASK_STATE_SUSPENDING = 9;
+}
+
+enum TaskResult {
+  TASK_RESULT_UNSPECIFIED = 0;
+  TASK_RESULT_SUCCEEDED = 1;
+  TASK_RESULT_FAILED = 2;
+  TASK_RESULT_CANCELLED = 3;
+  TASK_RESULT_UNVERIFIED = 4;
+}
+
+message TaskOutcome {
+  TaskResult result = 1;
+  repeated VerifierResult verifier_results = 2;
+  google.rpc.Status status = 3;
+  int32 exit_code = 10;
+}
+
+message VerifierResult {
+  string name = 1;
+  bool passed = 2;
+  string detail = 3;
+  int32 exit_code = 10;
+}
+
+message StatusDetail {
+  string reason = 1;
+  string detail = 2;
+}
+
+message TaskStatus {
+  reserved 5, 6;
+  string phase = 1 [deprecated = true];
+  string id = 2 [deprecated = true];
+  string actor = 3;
+  string worker_ip = 4 [json_name = "workerIP", deprecated = true];
+  repeated Condition conditions = 7;
+  TaskState state = 8;
+  StatusDetail status_detail = 9;
+  TaskOutcome outcome = 10;
+  int32 attempt = 11;
+  string actor_template = 12;
+  string forked_from_tag = 13;
+  string root_task_id = 14;
+  int64 generation = 15;
+  string resolved_image = 16;
+  repeated string resolved_argv = 17;
+  google.protobuf.Timestamp start_time = 18;
+  google.protobuf.Timestamp end_time = 19;
+  google.protobuf.Duration working_duration = 20;
+  string previous_failure = 21;
+}
+
+// --- Task RPC Messages ---
+
+message GetTaskRequest {
+  string atespace = 1;
+  string name = 2;
+}
+
+message ListTasksRequest {
+  string atespace = 1;
+  int64 limit = 2;
+  int64 offset = 3;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+}
+
+message CreateTaskRequest {
+  Task task = 1;
+}
+
+message DeleteTaskRequest {
+  string atespace = 1;
+  string name = 2;
+}
+
+message DeleteTaskResponse {}
+
+message SuspendTaskRequest {
+  string atespace = 1;
+  string name = 2;
+}
+
+message ResumeTaskRequest {
+  string atespace = 1;
+  string name = 2;
+}
+
+message CancelTaskRequest {
+  string atespace = 1;
+  string name = 2;
+}
+
+message ForkTaskRequest {
+  string atespace = 1;
+  string source_task = 2;
+  string name = 3;
+  map<string, string> labels = 4;
+  ForkOverrides overrides = 5;
+}
+
+message ForkOverrides {
+  repeated string command = 1;
+  repeated EnvVar env = 2;
+  repeated Goal goals = 3;
+  optional int32 max_retries = 4;
+  Budget budget = 5;
+  repeated EgressRule egress = 6;
+  google.protobuf.Struct config = 7;
+}

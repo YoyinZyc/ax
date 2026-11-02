@@ -1,0 +1,97 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ax.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/google/ax/pkg/apis/v1alpha1";
+
+// ObjectMeta is metadata shared by Task, Workspace, and Model resources.
+message ObjectMeta {
+  string name = 1;
+  string atespace = 2;
+  google.protobuf.Timestamp create_time = 3;
+  // Server-assigned UUID (replaces TaskStatus.id).
+  string uid = 4;
+  // Arbitrary key-value labels (also used for WS4 cost attribution).
+  map<string, string> labels = 5;
+  // Authenticated creator identity.
+  string owner = 6;
+  google.protobuf.Timestamp update_time = 7;
+  // Set while resource deletion is in progress.
+  google.protobuf.Timestamp delete_time = 8;
+}
+
+// Condition describes an observed state aspect of a resource.
+message Condition {
+  string type = 1;
+  string status = 2;
+  google.protobuf.Timestamp update_time = 3;
+  string reason = 4;
+  string message = 5;
+}
+
+// SnapshotFidelity orders the state layers captured when suspending an actor.
+// Mirrors Agent Substrate's ateapi SnapshotFidelity enum values.
+enum SnapshotFidelity {
+  // Defaults to SNAPSHOT_FIDELITY_MEMORY when unspecified.
+  SNAPSHOT_FIDELITY_UNSPECIFIED = 0;
+  // Captures only DurableDir volumes (e.g. /workspace).
+  SNAPSHOT_FIDELITY_VOLUMES = 1;
+  // Captures DurableDir volumes plus container rootfs upper layer.
+  SNAPSHOT_FIDELITY_ROOTFS = 2;
+  // Captures DurableDir volumes, container rootfs, and live sandbox memory.
+  SNAPSHOT_FIDELITY_MEMORY = 3;
+}
+
+message ResourceList {
+  string cpu = 1;
+  string memory = 2;
+}
+
+message ResourcesSpec {
+  // Deprecated: Substrate sizes sandboxes by limits alone.
+  ResourceList requests = 1 [deprecated = true];
+  ResourceList limits = 2;
+}
+
+// Profile defines the compute environment and snapshot fidelity that map 1:1
+// to a shared Substrate ActorTemplate (ax-<sha256[:16]>) within an atespace.
+//
+// Profile can be defined at two levels:
+//   1. WorkspaceSpec.default_profile: used by the setup actor to pre-warm the
+//      default workspace snapshot.
+//   2. TaskSpec.profile: optional per-task override. If omitted (or partially
+//      set), inherits from the bound Workspace's default_profile, then falls
+//      back to server defaults (default-task-image, 1000m CPU, 512Mi memory,
+//      SNAPSHOT_FIDELITY_MEMORY).
+//
+// If a Task overrides Profile such that it hashes to a different ActorTemplate
+// than the Workspace's pre-warmed snapshot, the first Task using that Profile
+// cold-starts workspace setup under the new ActorTemplate and caches a snapshot
+// for subsequent Tasks sharing the same Profile.
+message Profile {
+  // Container image (tag or digest; resolved to @sha256 at creation time).
+  string image = 1;
+  // Sandbox compute resource limits (CPU and memory).
+  ResourcesSpec resources = 2;
+  // Snapshot fidelity configured on the underlying ActorTemplate.
+  // Defaults to SNAPSHOT_FIDELITY_MEMORY when unset.
+  SnapshotFidelity snapshot_fidelity = 3;
+  // Labels matched against Substrate WorkerPools (pins the sandbox class).
+  map<string, string> worker_selector = 4;
+}

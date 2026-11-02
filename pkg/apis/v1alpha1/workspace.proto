@@ -1,0 +1,228 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ax.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+import "pkg/apis/v1alpha1/common.proto";
+import "pkg/apis/v1alpha1/egress.proto";
+
+option go_package = "github.com/google/ax/pkg/apis/v1alpha1";
+
+// Workspace defines a pre-warmed, shareable environment recipe and its cached
+// snapshots across one or more compute Profiles.
+message Workspace {
+  string api_version = 1;
+  string kind = 2;
+  ObjectMeta metadata = 3;
+  WorkspaceSpec spec = 4;
+  WorkspaceStatus status = 5;
+}
+
+// WorkspaceRef binds a Task to a Workspace in the same atespace.
+message WorkspaceRef {
+  string name = 1;
+  // Optional mount / working directory path inside the sandbox.
+  // Defaults to "/workspace" when omitted.
+  string path = 2;
+}
+
+message WorkspaceSpec {
+  // Deprecated: moved to `setup.git`.
+  repeated GitRepo git = 1 [deprecated = true];
+
+  // Deprecated: moved to `setup.files`.
+  repeated File files = 2 [deprecated = true];
+
+  // Runtime MCP capability definitions shared across tasks in this Workspace.
+  // Resolved dynamically by ax-server on every Task wakeup (create/resume) and
+  // delivered to the runner rather than baked into an immutable snapshot.
+  MCPConfig mcp = 3;
+
+  // Deprecated: moved to `setup.skills`.
+  SkillsConfig skills = 4 [deprecated = true];
+
+  // Default compute profile (image, resources, snapshot_fidelity, worker_selector)
+  // used to pre-warm the initial workspace snapshot upon Workspace creation.
+  // Tasks binding this Workspace inherit default_profile unless overridden in
+  // TaskSpec.profile.
+  Profile default_profile = 5;
+
+  // Agent harness identifier (e.g. "claude-code", "gemini-cli").
+  // Used to adapt runtime configurations (such as MCP servers) into the format
+  // expected by the harness inside the sandbox.
+  string harness = 6;
+
+  // Setup steps executed once in a setup actor and captured into the workspace
+  // snapshot. Modifications to `setup` take effect when the snapshot is rebuilt.
+  WorkspaceSetup setup = 7;
+
+  // Volume layout configuration for actors created from this Workspace.
+  WorkspaceStorage storage = 8;
+}
+
+// WorkspaceSetup groups deterministic environment preparation steps whose
+// results are persisted on disk/memory in the workspace snapshot.
+message WorkspaceSetup {
+  // Git repositories cloned during setup. On task fork from a snapshot, the
+  // runner fetches remote refs on first boot to keep HEAD fresh.
+  repeated GitRepo git = 1;
+
+  // Small inline files written relative to the workspace root (e.g. AGENTS.md).
+  repeated File files = 2;
+
+  // Skills fetched from registries into /workspace/.ax/skills/.
+  SkillsConfig skills = 3;
+
+  // Deterministic dependency installation commands executed in order
+  // (e.g. "npm ci", "pip install -r requirements.txt", "go mod download").
+  repeated string commands = 4;
+
+  // Outbound network and credential rules granted ONLY to the setup actor
+  // (e.g. private git repo credentials, package registries). Task actors never
+  // inherit setup egress policies or credentials.
+  repeated EgressRule egress = 5;
+}
+
+message WorkspaceStorage {
+  // Opt-in shared volume mounted at /shared across tasks in this Workspace
+  // (blocked on Substrate multi-actor shared volume support: substrate#1637).
+  bool shared = 1;
+}
+
+message GitRepo {
+  string name = 1;
+  // HTTPS repository URL (SSH is unsupported through the egress gateway).
+  string repo = 2;
+  // Deprecated: use `ref` instead.
+  string branch = 3 [deprecated = true];
+  // Checkout directory relative to the workspace root (defaults to ".").
+  string dir = 4;
+  int32 depth = 5;
+  // Target branch, tag, or commit SHA to check out.
+  string ref = 6;
+}
+
+message File {
+  string path = 1;
+  string content = 2;
+}
+
+message SkillsConfig {
+  repeated SkillRegistry registries = 1;
+  // Optional destination path; defaults to /workspace/.ax/skills/.
+  string path = 2;
+}
+
+message SkillRegistry {
+  string provider = 1;
+  string project = 2;
+  string query = 3;
+}
+
+message MCPConfig {
+  repeated MCPRegistry registries = 1;
+  repeated MCPServer servers = 2;
+}
+
+message MCPRegistry {
+  string provider = 1;
+  string project = 2;
+  string query = 3;
+  repeated MCPServer servers = 4;
+}
+
+message MCPServer {
+  string name = 1;
+  // Server URL/endpoint for HTTP/SSE transports.
+  string endpoint = 2;
+  // Command and arguments for stdio transports.
+  string command = 3;
+  repeated string args = 4;
+  // Transport type (e.g. "http", "stdio").
+  string transport = 5;
+  // Optional credential header injection for remote MCP endpoints (align with WS3).
+  HeaderInjection auth = 6;
+}
+
+message WorkspaceStatus {
+  // Lifecycle phase: Preparing | Ready | Failed.
+  string phase = 1;
+
+  // Snapshot status for `spec.default_profile`.
+  WorkspaceSnapshotStatus snapshot = 2;
+
+  // Cached snapshots keyed by resolved ActorTemplate name (e.g. "ax-3f9c1a2b5d7e9f01"),
+  // supporting both the pre-warmed default_profile and lazy snapshots created
+  // when Tasks override `TaskSpec.profile`.
+  map<string, WorkspaceSnapshotStatus> profile_snapshots = 3;
+
+  // Conditions such as SetupComplete, SnapshotReady, SharedStorageReady.
+  repeated Condition conditions = 4;
+
+  // Error recorded from the most recent failed setup attempt, if any.
+  string last_setup_error = 5;
+}
+
+message WorkspaceSnapshotStatus {
+  bool ready = 1;
+  google.protobuf.Timestamp create_time = 2;
+  // NOTE(ws1/ws5): Populated from the runner's SetupFinished event.
+  repeated ResolvedGitRepo git = 3;
+  WorkspaceSubstrateRef substrate = 4;
+}
+
+message ResolvedGitRepo {
+  string repo = 1;
+  string resolved_sha = 2;
+}
+
+message WorkspaceSubstrateRef {
+  TagRef tag = 1;
+  string actor_template = 2;
+  string template_uid = 3;
+}
+
+message TagRef {
+  string atespace = 1;
+  string name = 2;
+}
+
+// --- Workspace RPC Messages ---
+
+message GetWorkspaceRequest {
+  string atespace = 1;
+  string name = 2;
+}
+
+message ListWorkspacesRequest {
+  string atespace = 1;
+}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+}
+
+message UpdateWorkspaceRequest {
+  Workspace workspace = 1;
+}
+
+message DeleteWorkspaceRequest {
+  string atespace = 1;
+  string name = 2;
+}
+
+message DeleteWorkspaceResponse {}
