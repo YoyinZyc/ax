@@ -106,3 +106,22 @@ contexts:
 		t.Fatal("expected error switching to missing context")
 	}
 }
+
+func TestParsePushArgs(t *testing.T) {
+	got, err := parsePushArgs([]string{"rate-limiter-task", "--to", "gke-prod", "--branch", "main", "--keep-source-running"})
+	if err != nil {
+		t.Fatalf("parsePushArgs: %v", err)
+	}
+	if got.taskName != "rate-limiter-task" || got.toContext != "gke-prod" || got.branch != "main" || !got.keepSourceRunning {
+		t.Fatalf("unexpected parsed push flags: %+v", got)
+	}
+
+	helpFlags, err := parsePushArgs(nil)
+	if err != nil || !helpFlags.help {
+		t.Fatalf("expected help on empty args, got %+v, %v", helpFlags, err)
+	}
+
+	if _, err := parsePushArgs([]string{"rate-limiter-task"}); err == nil {
+		t.Fatal("expected error when --to is missing")
+	}
+}

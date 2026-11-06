@@ -142,6 +142,8 @@ func main() {
 		err = runDelete(serverURL, atespace, cleanArgs)
 	case "ssh":
 		err = runSSH(serverURL, atespace, kubeContext, axNamespace, cleanArgs)
+	case "push":
+		err = runPush(serverURL, atespace, kubeContext, axNamespace, cleanArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		printUsage()

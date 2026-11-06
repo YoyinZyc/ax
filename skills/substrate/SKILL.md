@@ -36,8 +36,8 @@ All Control API traffic goes through this package. It encapsulates:
   from `SUBSTRATE_CA_FILE`.
 - **Retry** — `IsTransientError` + `retryOnCodes` for `Unavailable`-class errors.
 - **Helpers** the reconciler relies on — `EnsureAtespace`, `EnsureActorTemplateWithImage`,
-  `EnsureActor`, `SuspendActor`, `ResumeActor`, `DeleteActor`, `WorkerIP`,
-  `ResourceLimits`, `BuildActorTemplate`.
+  `EnsureActor`, `EnsureActorEgressPolicy`, `SuspendActor`, `ResumeActor`, `DeleteActor`,
+  `WorkerIP`, `ResourceLimits`, `BuildActorTemplate`.
 
 ### Where a new Control API call lives today
 
@@ -107,6 +107,12 @@ instead. No mocking library is in `go.mod`.
   Substrate cluster has the `PerTemplateSnapshotLocation` preview feature gate enabled;
   otherwise Substrate rejects template creation with
   `actor_template.snapshot_config.storage_location: Forbidden`.
+- Outbound MITM trust & credential injection: `BuildActorTemplate` (`internal/substrate/client.go`)
+  mounts the `ate-trust` ConfigMap at `/etc/ate-trust` (`trust-bundle.pem`), `runner/runner.go`
+  exports `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `GIT_SSL_CAINFO` plus placeholder
+  Git/HTTP authorization headers, and `EnsureActorEgressPolicy` configures `HttpsRule`
+  credential substitution for `github.com:443` (`default/github-cred`) and
+  `*.googleapis.com:443` (`default/gcp-cred`).
 
 ## 5. E2E and the Substrate version pin
 

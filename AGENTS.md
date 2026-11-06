@@ -18,7 +18,7 @@ reconciler or server.
 ## Layout
 
 ```
-cmd/ax                 CLI (apply/get/describe/ssh/suspend/resume/delete/local/install/uninstall/ctx/tunnel)
+cmd/ax                 CLI (apply/get/describe/ssh/suspend/resume/push/delete/local/install/uninstall/ctx/tunnel)
 cmd/ax-server          Control plane: gRPC API; provisions, suspends, resumes and deletes task actors directly
 cmd/ax-task-runner     PID 1 inside the sandbox; materializes the Workspace, runs the agent
 deploy/                Canonical postgres.yaml + ax-server.yaml manifests and //go:embed renderers
@@ -32,7 +32,7 @@ internal/{tunnel,guest,metadata}  k8s port-forward, in-sandbox guest client, met
 pkg/apis/v1alpha1      ax.proto (source of truth) -> *.pb.go (generated), types.go, resources.go
 test/e2e               Kind-based; compiled by `go test ./...` but self-skips without AX_E2E=true
 hack/                  E2E provisioning and Substrate manifest sync scripts
-docs/                  manifests.md is the user-facing API reference; local_installer.md walks through ax local / ax install
+docs/                  manifests.md is the user-facing API reference; local_installer.md and adk_continuity_walkthrough.md walk through ax local / ax install / ax push
 skills/                Developer skills (SKILL.md format). .agents/skills, .claude/skills, and .gemini/skills symlink here.
 ```
 

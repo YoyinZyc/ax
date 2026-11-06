@@ -44,6 +44,22 @@ type mockControlClient struct {
 	templates           map[string]*ateapipb.ActorTemplate
 	createTemplateErrs  []error
 	createdTemplates    []*ateapipb.ActorTemplate
+	egressErrs          []error
+	createdEgress       []*ateapipb.CreateActorEgressPolicyRequest
+}
+
+func (m *mockControlClient) CreateActorEgressPolicy(ctx context.Context, req *ateapipb.CreateActorEgressPolicyRequest, opts ...grpc.CallOption) (*ateapipb.EgressPolicy, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.egressErrs) > 0 {
+		err := m.egressErrs[0]
+		m.egressErrs = m.egressErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	m.createdEgress = append(m.createdEgress, req)
+	return req.GetEgressPolicy(), nil
 }
 
 func (m *mockControlClient) GetActorTemplate(ctx context.Context, req *ateapipb.GetActorTemplateRequest, opts ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
@@ -510,5 +526,74 @@ func TestBuildActorTemplate_Resources(t *testing.T) {
 	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil)
 	if !proto.Equal(tmpl.GetResources(), wantDefault) {
 		t.Fatalf("template without limits has resources %v, want %v", tmpl.GetResources(), wantDefault)
+	}
+}
+
+func TestClient_EnsureActorEgressPolicy(t *testing.T) {
+	oldInterval := defaultRetryInterval
+	defaultRetryInterval = 1 * time.Millisecond
+	defer func() { defaultRetryInterval = oldInterval }()
+
+	tests := []struct {
+		name      string
+		atespace  string
+		errs      []error
+		wantErr   bool
+		wantCalls int
+	}{
+		{
+			name:      "created on first attempt",
+			atespace:  "default",
+			wantCalls: 1,
+		},
+		{
+			name:      "empty atespace defaults to default",
+			atespace:  "",
+			wantCalls: 1,
+		},
+		{
+			name:      "already exists is ignored",
+			atespace:  "default",
+			errs:      []error{status.Error(codes.AlreadyExists, "already exists")},
+			wantCalls: 0,
+		},
+		{
+			name:      "retries unavailable then succeeds",
+			atespace:  "default",
+			errs:      []error{status.Error(codes.Unavailable, "transient"), nil},
+			wantCalls: 1,
+		},
+		{
+			name:     "permanent error returned",
+			atespace: "default",
+			errs:     []error{status.Error(codes.PermissionDenied, "denied")},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockControlClient{egressErrs: tt.errs}
+			c := &Client{control: mock}
+			err := c.EnsureActorEgressPolicy(context.Background(), tt.atespace, "poc-demo")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("EnsureActorEgressPolicy() err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if len(mock.createdEgress) != tt.wantCalls {
+				t.Fatalf("createdEgress calls = %d, want %d", len(mock.createdEgress), tt.wantCalls)
+			}
+			if tt.wantCalls > 0 {
+				req := mock.createdEgress[0]
+				if req.GetActor().GetAtespace() != "default" || req.GetActor().GetName() != "poc-demo" {
+					t.Errorf("actor ref = %v, want default/poc-demo", req.GetActor())
+				}
+				if req.GetEgressPolicy().GetMetadata().GetName() != "default" {
+					t.Errorf("policy name = %q, want default", req.GetEgressPolicy().GetMetadata().GetName())
+				}
+				if len(req.GetEgressPolicy().GetRules()) != 4 {
+					t.Errorf("policy rules = %d, want 4", len(req.GetEgressPolicy().GetRules()))
+				}
+			}
+		})
 	}
 }

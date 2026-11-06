@@ -384,15 +384,34 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 					Port: 80,
 				},
 			},
-			VolumeMounts: []*ateapipb.VolumeMount{{
-				Name:      "workspace",
-				MountPath: "/workspace",
-			}},
+			VolumeMounts: []*ateapipb.VolumeMount{
+				{
+					Name:      "workspace",
+					MountPath: "/workspace",
+				},
+				{
+					Name:      "ate-trust",
+					MountPath: "/etc/ate-trust",
+				},
+			},
 		}},
-		Volumes: []*ateapipb.Volume{{
-			Name:       "workspace",
-			DurableDir: &ateapipb.DurableDirVolumeSource{},
-		}},
+		Volumes: []*ateapipb.Volume{
+			{
+				Name:       "workspace",
+				DurableDir: &ateapipb.DurableDirVolumeSource{},
+			},
+			{
+				Name: "ate-trust",
+				SystemInfo: &ateapipb.SystemInfoVolumeSource{
+					DataSources: []*ateapipb.SystemInfoDataSource{{
+						TrustBundle: &ateapipb.TrustBundleDataSource{
+							Names: []string{"system-roots.ate.dev", "egress-mitm.ate.dev"},
+							Path:  "trust-bundle.pem",
+						},
+					}},
+				},
+			},
+		},
 		SnapshotConfig: snapCfg,
 		Resources: &ateapipb.ResourceRequirements{
 			Limits: &ateapipb.Resources{
@@ -437,8 +456,20 @@ func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace,
 	return c.GetActorTemplate(ctx, targetAtespace, targetTemplate)
 }
 
-// EnsureActor creates an Actor in the specified atespace deriving from an ActorTemplate.
+// EnsureActor creates an Actor in the specified atespace deriving from an ActorTemplate
+// and ensures its default outbound EgressPolicy is present.
 func (c *Client) EnsureActor(ctx context.Context, atespace, actorName, templateAtespace, templateName string) (*ateapipb.Actor, error) {
+	actor, err := c.ensureActorResource(ctx, atespace, actorName, templateAtespace, templateName)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.EnsureActorEgressPolicy(ctx, atespace, actorName); err != nil {
+		return nil, err
+	}
+	return actor, nil
+}
+
+func (c *Client) ensureActorResource(ctx context.Context, atespace, actorName, templateAtespace, templateName string) (*ateapipb.Actor, error) {
 	req := &ateapipb.CreateActorRequest{
 		Actor: &ateapipb.Actor{
 			Metadata: &ateapipb.ResourceMetadata{
@@ -517,6 +548,83 @@ func (c *Client) EnsureActor(ctx context.Context, atespace, actorName, templateA
 		return nil, fmt.Errorf("creating actor %s/%s: %w", atespace, actorName, err)
 	}
 	return actor, nil
+}
+
+// EnsureActorEgressPolicy creates a default EgressPolicy on the actor if one does
+// not already exist, allowing outbound HTTP (port 80), TLS passthrough (port 443),
+// and HTTPS credential injection for github.com via k8s-credential-provider.
+func (c *Client) EnsureActorEgressPolicy(ctx context.Context, atespace, actorName string) error {
+	if atespace == "" {
+		atespace = "default"
+	}
+	req := &ateapipb.CreateActorEgressPolicyRequest{
+		Actor: &ateapipb.ObjectRef{
+			Atespace: atespace,
+			Name:     actorName,
+		},
+		EgressPolicy: &ateapipb.EgressPolicy{
+			Metadata: &ateapipb.ResourceMetadata{
+				Atespace: atespace,
+				Name:     "default",
+			},
+			Rules: []*ateapipb.EgressRule{
+				{
+					Https: &ateapipb.HttpsRule{
+						Hostnames: []string{"github.com"},
+						Ports: &ateapipb.Ports{
+							Numbers: []int32{443},
+						},
+						Effects: &ateapipb.HttpRuleEffects{
+							ReplaceHeaders: []*ateapipb.CredentialHeader{{
+								Header:        "Authorization",
+								Prefix:        "Basic ",
+								CredentialUri: fmt.Sprintf("ate-secret://k8s.io/default/%s/github-cred/token", atespace),
+							}},
+						},
+					},
+				},
+				{
+					Https: &ateapipb.HttpsRule{
+						Hostnames: []string{"*.googleapis.com"},
+						Ports: &ateapipb.Ports{
+							Numbers: []int32{443},
+						},
+						Effects: &ateapipb.HttpRuleEffects{
+							ReplaceHeaders: []*ateapipb.CredentialHeader{{
+								Header:        "Authorization",
+								Prefix:        "Bearer ",
+								CredentialUri: fmt.Sprintf("ate-secret://k8s.io/default/%s/gcp-cred/token", atespace),
+							}},
+						},
+					},
+				},
+				{
+					TlsPassthrough: &ateapipb.TlsPassthroughRule{
+						Hostnames: []string{"*"},
+						Ports: &ateapipb.Ports{
+							Numbers: []int32{443},
+						},
+					},
+				},
+				{
+					Http: &ateapipb.HttpRule{
+						Hostnames: []string{"*"},
+						Ports: &ateapipb.Ports{
+							Numbers: []int32{80},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := retryOnCodes(ctx, func() error {
+		_, err := c.control.CreateActorEgressPolicy(ctx, req)
+		return err
+	}, codes.Unavailable)
+	if err != nil && status.Code(err) != codes.AlreadyExists && status.Code(err) != codes.Unimplemented {
+		return fmt.Errorf("creating actor egress policy for %s/%s: %w", atespace, actorName, err)
+	}
+	return nil
 }
 
 // ResumeActor resumes the specified actor onto a worker and returns the worker details.

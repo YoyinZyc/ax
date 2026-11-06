@@ -21,7 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     procps \
     bash \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir "google-adk[gcp]" pytest
 
 ARG TARGETARCH=amd64
 COPY bin/linux_${TARGETARCH}/ax-task-runner /usr/local/bin/ax-task-runner

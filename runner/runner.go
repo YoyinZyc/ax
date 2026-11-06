@@ -115,6 +115,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	metadataURL := metaServer.MetadataURL()
 	_ = os.Setenv("AX_METADATA_URL", metadataURL)
+	configureEgressTrustAndGit()
 	for _, e := range cfg.Task.GetSpec().GetEnv() {
 		_ = os.Setenv(e.GetName(), e.GetValue())
 	}
@@ -209,4 +210,24 @@ func commandEnv(task *v1alpha1.Task, metadataURL string) []string {
 		env = append(env, fmt.Sprintf("%s=%s", e.GetName(), e.GetValue()))
 	}
 	return env
+}
+
+const defaultEgressTrustBundle = "/etc/ate-trust/trust-bundle.pem"
+
+func configureEgressTrustAndGit() {
+	if _, err := os.Stat(defaultEgressTrustBundle); err != nil {
+		return
+	}
+	_ = os.Setenv("SSL_CERT_FILE", defaultEgressTrustBundle)
+	_ = os.Setenv("REQUESTS_CA_BUNDLE", defaultEgressTrustBundle)
+	_ = os.Setenv("GIT_SSL_CAINFO", defaultEgressTrustBundle)
+
+	for _, args := range [][]string{
+		{"config", "--global", "http.sslCAInfo", defaultEgressTrustBundle},
+		{"config", "--global", "http.https://github.com/.extraHeader", "Authorization: placeholder"},
+		{"config", "--global", "user.name", "AX Agent"},
+		{"config", "--global", "user.email", "ax-agent@google.com"},
+	} {
+		_ = exec.Command("git", args...).Run()
+	}
 }

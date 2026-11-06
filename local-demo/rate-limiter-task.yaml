@@ -1,0 +1,38 @@
+apiVersion: ax.io/v1alpha1
+kind: Workspace
+metadata:
+  name: demo-repo-ws
+spec:
+  git:
+    - name: origin
+      repo: "https://github.com/YoyinZyc/ax-continuity-demo.git"
+      branch: "main"
+---
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: rate-limiter-task
+spec:
+  workspace:
+    name: demo-repo-ws
+  command:
+    - python3
+    - -u
+    - /workspace/ax-continuity-demo/agent_runner.py
+  env:
+    - name: GOOGLE_GENAI_USE_VERTEXAI
+      value: "TRUE"
+    - name: GOOGLE_CLOUD_PROJECT
+      value: "yczhou-gke-dev"
+    - name: GOOGLE_CLOUD_LOCATION
+      value: "global"
+    - name: VERTEX_ENGINE_LOCATION
+      value: "us-central1"
+    - name: AGENT_ENGINE_ID
+      value: "6400193688487591936"
+    - name: AX_RUN_ID
+      value: "rate-limiter-run-003"
+    - name: AX_CLUSTER_CONTEXT
+      value: "local"
+    - name: STAGE_PAUSE_SECONDS
+      value: "25"
