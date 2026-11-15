@@ -1,0 +1,93 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Release AX CLI & Verify macOS
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Cross-compile ax CLI for macOS and Linux
+        run: |
+          mkdir -p dist
+          for target in "darwin amd64" "darwin arm64" "linux amd64" "linux arm64"; do
+            set -- $target
+            os="$1"
+            arch="$2"
+            stage_dir="$(mktemp -d)"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$stage_dir/ax" ./cmd/ax
+            tar -czf "dist/ax_${os}_${arch}.tar.gz" -C "$stage_dir" ax
+            rm -rf "$stage_dir"
+          done
+          cp install.sh dist/install.sh
+          (cd dist && sha256sum ax_*.tar.gz > checksums.txt)
+          cat dist/checksums.txt
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ax-cli-archives
+          path: dist/*
+
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" dist/ax_*.tar.gz dist/checksums.txt dist/install.sh --clobber || \
+          gh release create "${GITHUB_REF_NAME}" dist/ax_*.tar.gz dist/checksums.txt dist/install.sh --generate-notes
+
+  verify-macos-arm64:
+    needs: release-cli
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Verify install.sh one-liner on Apple Silicon macOS (darwin/arm64)
+        run: |
+          uname -a
+          sw_vers
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/install.sh" \
+            | AX_GITHUB_REPO="${GITHUB_REPOSITORY}" AX_VERSION="${GITHUB_REF_NAME}" sh
+          file "${HOME}/.ax/bin/ax"
+          "${HOME}/.ax/bin/ax" version
+          "${HOME}/.ax/bin/ax" local --help
+          "${HOME}/.ax/bin/ax" install --help
+          "${HOME}/.ax/bin/ax" ctx
+
+      - name: Run installer & tunnel unit tests natively on macOS (darwin/arm64)
+        run: |
+          export GOTOOLCHAIN=auto
+          go test -v ./cmd/ax/... ./internal/install/... ./internal/tunnel/... ./deploy/...
