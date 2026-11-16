@@ -170,6 +170,7 @@ func (p *KindProvider) Stop(ctx context.Context, name string) error {
 	}
 	kubeCtx := KubeContextName(name)
 	_ = tunnel.StopTunnelByContext(kubeCtx)
+	_ = tunnel.StopTunnelByContext(name)
 	_ = tunnel.StopTunnelByContext("kind-" + name)
 
 	rt, kindBin, _, err := p.resolveTools(ctx)
@@ -277,6 +278,7 @@ func (p *KindProvider) Delete(ctx context.Context, name string) error {
 	}
 	kubeCtx := KubeContextName(name)
 	_ = tunnel.StopTunnelByContext(kubeCtx)
+	_ = tunnel.StopTunnelByContext(name)
 	_ = tunnel.StopTunnelByContext("kind-" + name)
 
 	rt, kindBin, kubectlBin, err := p.resolveTools(ctx)
@@ -285,12 +287,7 @@ func (p *KindProvider) Delete(ctx context.Context, name string) error {
 	}
 
 	rawCtx := "kind-" + name
-	ownsTargetCtx := false
-	if kubeCtx != rawCtx {
-		if existingCluster, exists, err := p.contextCluster(ctx, kubectlBin, kubeCtx); err == nil && exists && existingCluster == rawCtx {
-			ownsTargetCtx = true
-		}
-	}
+	ownedContexts, activeDeleted := p.ownedContextsForCluster(ctx, kubectlBin, name, kubeCtx, rawCtx)
 
 	fmt.Fprintf(p.Out, "==> Deleting Kind cluster %q...\n", name)
 	if _, err := p.Runner.Run(ctx, executil.Spec{
@@ -303,10 +300,16 @@ func (p *KindProvider) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("deleting kind cluster %q: %w", name, err)
 	}
 
-	if ownsTargetCtx {
+	for _, cName := range ownedContexts {
 		_, _ = p.Runner.Run(ctx, executil.Spec{
 			Name: kubectlBin,
-			Args: []string{"config", "delete-context", kubeCtx},
+			Args: []string{"config", "delete-context", cName},
+		})
+	}
+	if activeDeleted {
+		_, _ = p.Runner.Run(ctx, executil.Spec{
+			Name: kubectlBin,
+			Args: []string{"config", "unset", "current-context"},
 		})
 	}
 	return nil
@@ -404,6 +407,45 @@ func (p *KindProvider) containerRunning(ctx context.Context, rt executil.Contain
 		return false, err
 	}
 	return strings.TrimSpace(res.Stdout) == "true", nil
+}
+
+func (p *KindProvider) ownedContextsForCluster(ctx context.Context, kubectlBin, name, kubeCtx, rawCtx string) ([]string, bool) {
+	res, err := p.Runner.Run(ctx, executil.Spec{
+		Name: kubectlBin,
+		Args: []string{"config", "view", "-o", "yaml"},
+	})
+	if err != nil {
+		return nil, false
+	}
+	var cfg struct {
+		CurrentContext string `yaml:"current-context"`
+		Contexts       []struct {
+			Name    string `yaml:"name"`
+			Context struct {
+				Cluster string `yaml:"cluster"`
+			} `yaml:"context"`
+		} `yaml:"contexts"`
+	}
+	if err := yaml.Unmarshal([]byte(res.Stdout), &cfg); err != nil {
+		return nil, false
+	}
+	var owned []string
+	cur := strings.TrimSpace(cfg.CurrentContext)
+	activeDeleted := cur == rawCtx
+	for _, c := range cfg.Contexts {
+		if strings.TrimSpace(c.Context.Cluster) != rawCtx {
+			continue
+		}
+		if c.Name == kubeCtx || c.Name == name {
+			if c.Name != rawCtx {
+				owned = append(owned, c.Name)
+			}
+			if cur == c.Name {
+				activeDeleted = true
+			}
+		}
+	}
+	return owned, activeDeleted
 }
 
 func (p *KindProvider) contextCluster(ctx context.Context, kubectlBin, ctxName string) (string, bool, error) {

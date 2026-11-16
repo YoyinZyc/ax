@@ -18,7 +18,7 @@ reconciler or server.
 ## Layout
 
 ```
-cmd/ax                 CLI (apply/get/describe/ssh/suspend/resume/delete/local/install/uninstall/ctx/tunnel)
+cmd/ax                 CLI (apply/get/describe/ssh/suspend/resume/delete/local/install/uninstall/studio/ctx/tunnel)
 cmd/ax-server          Control plane: gRPC API; provisions, suspends, resumes and deletes task actors directly
 cmd/ax-task-runner     PID 1 inside the sandbox; materializes the Workspace, runs the agent
 deploy/                Canonical postgres.yaml + ax-server.yaml manifests and //go:embed renderers

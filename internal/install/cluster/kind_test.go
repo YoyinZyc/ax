@@ -166,6 +166,7 @@ func TestKindProviderDeletesOwnedKubeContext(t *testing.T) {
 
 	ownedKubeconfig := `apiVersion: v1
 kind: Config
+current-context: ax-local
 contexts:
 - name: ax-local
   context:
@@ -191,14 +192,21 @@ contexts:
 		t.Fatalf("Delete: %v", err)
 	}
 	sawDeleteCtx := false
+	sawUnsetCurrent := false
 	for _, c := range rr.calls {
 		joined := c.Name + " " + strings.Join(c.Args, " ")
 		if strings.Contains(joined, "config delete-context ax-local") {
 			sawDeleteCtx = true
 		}
+		if strings.Contains(joined, "config unset current-context") {
+			sawUnsetCurrent = true
+		}
 	}
 	if !sawDeleteCtx {
 		t.Fatal("expected Delete to remove owned ax-local context")
+	}
+	if !sawUnsetCurrent {
+		t.Fatal("expected Delete to unset current-context when active context was deleted")
 	}
 }
 

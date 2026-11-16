@@ -104,13 +104,24 @@ func CurrentContext(override string) (string, error) {
 		return env, nil
 	}
 
+	parsedAny := false
 	for _, path := range kubeconfigPaths() {
 		if data, err := os.ReadFile(path); err == nil {
 			var cfg kubeConfig
-			if err := yaml.Unmarshal(data, &cfg); err == nil && cfg.CurrentContext != "" {
-				return cfg.CurrentContext, nil
+			if err := yaml.Unmarshal(data, &cfg); err == nil {
+				parsedAny = true
+				if cfg.CurrentContext != "" {
+					for _, c := range cfg.Contexts {
+						if c.Name == cfg.CurrentContext {
+							return cfg.CurrentContext, nil
+						}
+					}
+				}
 			}
 		}
+	}
+	if parsedAny {
+		return "", nil
 	}
 
 	kubectlBin := kubectlIfInstalled()
